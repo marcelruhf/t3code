@@ -201,6 +201,24 @@ it.effect("clones a looked-up repository after creating missing parent directori
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
+it.effect("marks a non-empty destination so clients can offer to add the folder instead", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const destinationPath = yield* fs.makeTempDirectoryScoped({ prefix: "t3-clone-existing-" });
+    yield* fs.writeFileString(path.join(destinationPath, "README.md"), "already here");
+
+    const error = yield* Effect.gen(function* () {
+      const service = yield* SourceControlRepositoryService.SourceControlRepositoryService;
+      return yield* service
+        .prepareClone({ remoteUrl: CLONE_URLS.url, destinationPath })
+        .pipe(Effect.flip);
+    }).pipe(Effect.provide(layer({})));
+
+    assert.strictEqual(error.reason, "destination-not-empty");
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+);
+
 it.effect.each(["--bare", "source.git"])(
   "clones a local repository named %s as a working tree",
   (repositoryName) =>

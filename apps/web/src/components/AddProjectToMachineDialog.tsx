@@ -12,8 +12,11 @@ import {
   type EnvironmentId,
   type ProjectIgnoredFile,
   type ScopedProjectRef,
+  SourceControlRepositoryError,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import * as Schema from "effect/Schema";
 import {
   type CloneProtocol,
   cloneUrlForProtocol,
@@ -42,6 +45,7 @@ import { useEnvironments } from "../state/environments";
 import { projectEnvironment } from "../state/projects";
 import { useDebouncedValue } from "../state/queries";
 import { useEnvironmentQuery } from "../state/query";
+import { useAtomCommand } from "../state/use-atom-command";
 import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
@@ -59,6 +63,8 @@ import { Label } from "./ui/label";
 import { MiddleTruncate } from "./ui/middle-truncate";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
 import { Toggle, ToggleGroup } from "./ui/toggle-group";
+
+const isSourceControlRepositoryError = Schema.is(SourceControlRepositoryError);
 
 interface AddProjectToMachineRequest {
   readonly projectRef: ScopedProjectRef;
@@ -165,6 +171,16 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
+  // A clone refused because the folder is taken; editing the path or machine clears the offer.
+  const [occupiedFolder, setOccupiedFolder] = useState<{
+    readonly environmentId: EnvironmentId;
+    readonly path: string;
+  } | null>(null);
+  const folderOccupied =
+    occupiedFolder !== null &&
+    occupiedFolder.environmentId === target?.environmentId &&
+    occupiedFolder.path === destinationPath.trim();
 
   // The project or every target can vanish while the dialog is open. Submitting
   // before the file list loads would silently skip the default .env copies.
@@ -220,6 +236,31 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
     }
     setSubmitting(true);
     setError(null);
+    if (folderOccupied) {
+      // The folder is the user's own checkout, so its files stay as they are and nothing is copied.
+      const projectId = newProjectId();
+      const result = await createProject({
+        environmentId: target.environmentId,
+        input: {
+          projectId,
+          title: project.title,
+          workspaceRoot: destinationPath.trim(),
+          createWorkspaceRootIfMissing: false,
+          defaultModelSelection: null,
+        },
+      });
+      if (result._tag === "Failure") {
+        setError(
+          thrownErrorMessage(squashAtomCommandFailure(result), m) ??
+            gt("Could not add the folder."),
+        );
+        setSubmitting(false);
+        return;
+      }
+      close();
+      openClonedProject(scopeProjectRef(target.environmentId, projectId));
+      return;
+    }
     try {
       const projectId = await addProjectToMachine({
         source: { environmentId: project.environmentId, cwd: project.workspaceRoot },
@@ -237,7 +278,11 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
       close();
       openClonedProject(scopeProjectRef(target.environmentId, projectId));
     } catch (cause) {
-      setError(thrownErrorMessage(cause, m) ?? gt("Could not start the clone."));
+      if (isSourceControlRepositoryError(cause) && cause.reason === "destination-not-empty") {
+        setOccupiedFolder({ environmentId: target.environmentId, path: destinationPath.trim() });
+      } else {
+        setError(thrownErrorMessage(cause, m) ?? gt("Could not start the clone."));
+      }
       setSubmitting(false);
     }
   };
@@ -283,14 +328,18 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
                 </span>
               </div>
               <div className="flex w-28 flex-col items-center gap-0.5 text-muted-foreground text-xs">
-                {/* oxlint-disable-next-line t3code/no-untranslated-copy -- git command name */}
-                <span>git clone</span>
+                {folderOccupied ? (
+                  <span>{gt("existing folder")}</span>
+                ) : (
+                  // oxlint-disable-next-line t3code/no-untranslated-copy -- git command name
+                  <span>git clone</span>
+                )}
                 <span className="flex w-full items-center">
                   <span className="h-px flex-1 bg-border" />
                   <ArrowRightIcon className="-ms-1 size-3.5" aria-hidden />
                 </span>
                 <span>
-                  {selectedFiles.size === 0
+                  {folderOccupied || selectedFiles.size === 0
                     ? gt("no files")
                     : gt("{count, plural, one {+ {count} file} other {+ {count} files}}", {
                         count: selectedFiles.size,
@@ -337,25 +386,29 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
               </div>
             </div>
 
-            <div className="flex flex-col gap-1.5">
-              <Label>
-                <T>Clone over</T>
-              </Label>
-              {sshUrl && httpsUrl ? (
-                <ToggleGroup
-                  aria-label={gt("Clone protocol")}
-                  value={protocol ? [protocol] : []}
-                  onValueChange={(next) => {
-                    const value = next[0];
-                    if (value === "ssh" || value === "https") setProtocol(value);
-                  }}
-                >
-                  <Toggle value="ssh">SSH</Toggle>
-                  <Toggle value="https">HTTPS</Toggle>
-                </ToggleGroup>
-              ) : null}
-              <span className="truncate font-mono text-muted-foreground text-xs">{remoteUrl}</span>
-            </div>
+            {folderOccupied ? null : (
+              <div className="flex flex-col gap-1.5">
+                <Label>
+                  <T>Clone over</T>
+                </Label>
+                {sshUrl && httpsUrl ? (
+                  <ToggleGroup
+                    aria-label={gt("Clone protocol")}
+                    value={protocol ? [protocol] : []}
+                    onValueChange={(next) => {
+                      const value = next[0];
+                      if (value === "ssh" || value === "https") setProtocol(value);
+                    }}
+                  >
+                    <Toggle value="ssh">SSH</Toggle>
+                    <Toggle value="https">HTTPS</Toggle>
+                  </ToggleGroup>
+                ) : null}
+                <span className="truncate font-mono text-muted-foreground text-xs">
+                  {remoteUrl}
+                </span>
+              </div>
+            )}
 
             <div className="flex flex-col gap-1.5">
               <Label htmlFor={`${id}-path`}>
@@ -372,9 +425,17 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
                 spellCheck={false}
                 autoComplete="off"
               />
+              {folderOccupied ? (
+                <p className="text-muted-foreground text-xs">
+                  {gt(
+                    "This folder already exists on {machine}. Add it as the project as it is, or choose another folder to clone into.",
+                    { machine: target?.label ?? "" },
+                  )}
+                </p>
+              ) : null}
             </div>
 
-            {canListFiles ? (
+            {canListFiles && !folderOccupied ? (
               <div className="flex flex-col gap-1.5">
                 <div className="flex items-center gap-2">
                   <Label className="flex-1">
@@ -470,9 +531,11 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
             <Button type="submit" disabled={unavailable || submitting}>
               {submitting
                 ? gt("Starting…")
-                : target
-                  ? gt("Clone to {machine}", { machine: target.label })
-                  : gt("Clone to machine")}
+                : folderOccupied
+                  ? gt("Add existing folder")
+                  : target
+                    ? gt("Clone to {machine}", { machine: target.label })
+                    : gt("Clone to machine")}
             </Button>
           </DialogFooter>
         </form>

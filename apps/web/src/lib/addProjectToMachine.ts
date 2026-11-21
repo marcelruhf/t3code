@@ -152,7 +152,9 @@ export async function addProjectToMachine(input: AddProjectToMachineInput): Prom
   );
   if (started._tag === "Failure") {
     setFileCopy(requestedKey, null);
-    throw new Error(failureMessage(started));
+    // The dialog reads a typed error's fields, such as a destination that already exists.
+    const error = squashAtomCommandFailure(started);
+    throw error instanceof Error ? error : new Error(failureMessage(started));
   }
   // The server clones for the existing project when one already owns the empty destination.
   const { projectId } = started.value;

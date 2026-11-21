@@ -254,6 +254,8 @@ export class SourceControlRepositoryError extends Schema.TaggedError<SourceContr
     provider: SourceControlProviderKind,
     operation: Schema.String,
     detail: Schema.String,
+    /** Set when clients can offer something better than the detail, like adding the folder. */
+    reason: Schema.optionalKey(Schema.Literal("destination-not-empty")),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {

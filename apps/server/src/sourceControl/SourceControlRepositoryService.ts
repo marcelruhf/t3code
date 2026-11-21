@@ -279,6 +279,7 @@ export const make = Effect.gen(function* () {
             operation: "cloneRepository",
             provider: SourceControlProviderKind.make("unknown"),
             detail: "Destination path already exists and is not empty.",
+            reason: "destination-not-empty",
           });
         }
       } else {
