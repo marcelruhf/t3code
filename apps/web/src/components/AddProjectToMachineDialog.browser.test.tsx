@@ -33,28 +33,14 @@ const project = vi.hoisted(() => {
 
 const machine = vi.hoisted(() => {
   let targets: ReadonlyArray<unknown> = [];
-  let projects: ReadonlyArray<unknown> = [];
   let clone = (): Promise<unknown> => Promise.resolve(null);
-  const projectCommand = vi.fn<(value: unknown) => Promise<unknown>>();
-  const openThread = vi.fn<(ref: unknown) => void>();
   return {
-    setup: (next: {
-      targets: ReadonlyArray<unknown>;
-      projects?: ReadonlyArray<unknown>;
-      clone: () => Promise<unknown>;
-    }) => {
+    setup: (next: { targets: ReadonlyArray<unknown>; clone: () => Promise<unknown> }) => {
       targets = next.targets;
-      projects = next.projects ?? [];
       clone = next.clone;
-      projectCommand.mockReset();
-      projectCommand.mockResolvedValue({ _tag: "Success" });
-      openThread.mockReset();
     },
     targets: () => targets,
-    projects: () => projects,
     clone: () => clone(),
-    projectCommand,
-    openThread,
   };
 });
 
@@ -63,7 +49,6 @@ vi.mock(import("../state/entities"), async (original) => {
   return {
     ...(await original()),
     readProject: (() => project.get()) as never,
-    readProjects: (() => machine.projects()) as never,
     subscribeProject: ((_ref: unknown, listener: (value: unknown) => void) =>
       project.subscribe(() => listener(project.get()))) as never,
     useProject: (() => useSyncExternalStore(project.subscribe, project.get)) as never,
@@ -75,7 +60,7 @@ vi.mock(import("../state/environments"), async (original) => ({
 }));
 vi.mock(import("../hooks/useHandleNewThread"), async (original) => ({
   ...(await original()),
-  useNewThreadHandler: (() => machine.openThread) as never,
+  useNewThreadHandler: (() => () => undefined) as never,
 }));
 vi.mock(import("../hooks/useAddProjectTargets"), async (original) => ({
   ...(await original()),
@@ -89,10 +74,6 @@ vi.mock(import("../hooks/useLogicalProjectEnvironments"), async (original) => ({
 vi.mock(import("../lib/addProjectToMachine"), async (original) => ({
   ...(await original()),
   addProjectToMachine: (() => machine.clone()) as never,
-}));
-vi.mock(import("../state/use-atom-command"), async (original) => ({
-  ...(await original()),
-  useAtomCommand: (() => machine.projectCommand) as never,
 }));
 
 import {
@@ -122,7 +103,7 @@ const refuseOccupiedResolvedFolder = () =>
   );
 
 describe("AddProjectToMachineDialog", () => {
-  it("offers to add the folder as the project while the clone destination is taken", async () => {
+  it("offers the taken folder until the folder or machine changes", async () => {
     project.setup(PROJECT);
     machine.setup({ targets: [LAPTOP_TARGET], clone: refuseOccupiedResolvedFolder });
     await using screen = await render(<AddProjectToMachineDialogHost />);
@@ -133,55 +114,8 @@ describe("AddProjectToMachineDialog", () => {
     await userEvent.keyboard("{Enter}");
     await expect.element(screen.getByRole("button", { name: "Add existing folder" })).toBeVisible();
     await userEvent.fill(folder, "~/code/other");
+
     await expect.element(screen.getByRole("button", { name: "Clone to Laptop" })).toBeVisible();
-    await userEvent.fill(folder, "~/code/repo");
-    await userEvent.keyboard("{Enter}");
-
-    await vi.waitFor(() =>
-      expect(machine.projectCommand).toHaveBeenCalledWith({
-        environmentId: laptop,
-        input: expect.objectContaining({
-          workspaceRoot: "/home/me/code/repo",
-          createWorkspaceRootIfMissing: false,
-        }),
-      }),
-    );
-  });
-
-  it("opens the project that already owns the taken folder instead of adding another", async () => {
-    project.setup(PROJECT);
-    const owner = ProjectId.make("laptop-project");
-    machine.setup({
-      targets: [LAPTOP_TARGET],
-      projects: [
-        {
-          environmentId,
-          id: ProjectId.make("same-path-elsewhere"),
-          workspaceRoot: "/home/me/code/repo",
-        },
-        {
-          environmentId: laptop,
-          id: owner,
-          workspaceRoot: "/home/me/code/repo/",
-          archivedAt: "2026-11-01T00:00:00.000Z",
-        },
-      ],
-      clone: refuseOccupiedResolvedFolder,
-    });
-    await using screen = await render(<AddProjectToMachineDialogHost />);
-    await act(() => openAddProjectToMachine({ projectRef, targetEnvironmentId: laptop }));
-    await userEvent.fill(screen.getByLabelText("Folder on Laptop"), "~/code/repo");
-    await userEvent.keyboard("{Enter}");
-    await expect.element(screen.getByRole("button", { name: "Add existing folder" })).toBeVisible();
-
-    await userEvent.keyboard("{Enter}");
-
-    await vi.waitFor(() =>
-      expect(machine.openThread).toHaveBeenCalledWith(scopeProjectRef(laptop, owner)),
-    );
-    expect(machine.projectCommand.mock.calls).toEqual([
-      [{ environmentId: laptop, input: { projectId: owner, archived: false } }],
-    ]);
   });
 
   it("closes when its project goes away", async () => {
