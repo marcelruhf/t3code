@@ -177,17 +177,15 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
   const [error, setError] = useState<string | null>(null);
   const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
   const updateProject = useAtomCommand(projectEnvironment.update, { reportFailure: false });
-  // A clone refused because the folder is taken; editing the path or machine clears the offer.
-  const [occupiedFolder, setOccupiedFolder] = useState<{
+  const [refusedFolder, setRefusedFolder] = useState<{
     readonly environmentId: EnvironmentId;
     readonly typedPath: string;
-    /** The server's resolved path, which is what stored projects record. */
-    readonly path: string;
+    readonly resolvedPath: string;
   } | null>(null);
   const occupied =
-    occupiedFolder?.environmentId === target?.environmentId &&
-    occupiedFolder?.typedPath === destinationPath.trim()
-      ? occupiedFolder
+    refusedFolder?.environmentId === target?.environmentId &&
+    refusedFolder?.typedPath === destinationPath.trim()
+      ? refusedFolder
       : null;
 
   // The project or every target can vanish while the dialog is open. Submitting
@@ -245,11 +243,9 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
     setSubmitting(true);
     setError(null);
     if (occupied) {
-      // The folder is the user's own checkout, so its files stay as they are and nothing is copied.
-      // A project there already owns it, so open that one (back from the archive if needed).
       const existing = findProjectByPath(
         readProjects().filter((candidate) => candidate.environmentId === target.environmentId),
-        occupied.path,
+        occupied.resolvedPath,
       );
       const projectId = existing?.id ?? newProjectId();
       let result: AtomCommandResult<unknown, unknown> | null = null;
@@ -259,7 +255,7 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
           input: {
             projectId,
             title: project.title,
-            workspaceRoot: occupied.path,
+            workspaceRoot: occupied.resolvedPath,
             createWorkspaceRootIfMissing: false,
             defaultModelSelection: null,
           },
@@ -300,10 +296,10 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
       openClonedProject(scopeProjectRef(target.environmentId, projectId));
     } catch (cause) {
       if (isSourceControlRepositoryError(cause) && cause.occupiedDestination !== undefined) {
-        setOccupiedFolder({
+        setRefusedFolder({
           environmentId: target.environmentId,
           typedPath: destinationPath.trim(),
-          path: cause.occupiedDestination,
+          resolvedPath: cause.occupiedDestination,
         });
       } else {
         setError(thrownErrorMessage(cause, m) ?? gt("Could not start the clone."));

@@ -254,7 +254,7 @@ export class SourceControlRepositoryError extends Schema.TaggedError<SourceContr
     provider: SourceControlProviderKind,
     operation: Schema.String,
     detail: Schema.String,
-    /** The resolved clone destination when it already holds files, so clients can offer the folder. */
+    /** The resolved clone destination when it already holds files. */
     occupiedDestination: Schema.optionalKey(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },

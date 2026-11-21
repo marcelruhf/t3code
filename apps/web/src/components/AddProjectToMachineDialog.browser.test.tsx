@@ -35,11 +35,9 @@ const machine = vi.hoisted(() => {
   let targets: ReadonlyArray<unknown> = [];
   let projects: ReadonlyArray<unknown> = [];
   let clone = (): Promise<unknown> => Promise.resolve(null);
-  // Project create and update both run through this one command mock.
-  const runCommand = vi.fn<(value: unknown) => Promise<unknown>>();
+  const projectCommand = vi.fn<(value: unknown) => Promise<unknown>>();
   const openThread = vi.fn<(ref: unknown) => void>();
   return {
-    // Each test chooses the machines it can clone to, their projects, and how the clone answers.
     setup: (next: {
       targets: ReadonlyArray<unknown>;
       projects?: ReadonlyArray<unknown>;
@@ -48,14 +46,14 @@ const machine = vi.hoisted(() => {
       targets = next.targets;
       projects = next.projects ?? [];
       clone = next.clone;
-      runCommand.mockReset();
-      runCommand.mockResolvedValue({ _tag: "Success" });
+      projectCommand.mockReset();
+      projectCommand.mockResolvedValue({ _tag: "Success" });
       openThread.mockReset();
     },
     targets: () => targets,
     projects: () => projects,
     clone: () => clone(),
-    runCommand,
+    projectCommand,
     openThread,
   };
 });
@@ -94,7 +92,7 @@ vi.mock(import("../lib/addProjectToMachine"), async (original) => ({
 }));
 vi.mock(import("../state/use-atom-command"), async (original) => ({
   ...(await original()),
-  useAtomCommand: (() => machine.runCommand) as never,
+  useAtomCommand: (() => machine.projectCommand) as never,
 }));
 
 import {
@@ -113,8 +111,7 @@ const PROJECT = {
 };
 const laptop = EnvironmentId.make("laptop");
 const LAPTOP_TARGET = { environmentId: laptop, label: "Laptop", machine: "laptop" };
-// The server reports the folder resolved, as stored projects record it.
-const refuseOccupiedFolder = () =>
+const refuseOccupiedResolvedFolder = () =>
   Promise.reject(
     new SourceControlRepositoryError({
       provider: SourceControlProviderKind.make("unknown"),
@@ -127,7 +124,7 @@ const refuseOccupiedFolder = () =>
 describe("AddProjectToMachineDialog", () => {
   it("offers to add the folder as the project while the clone destination is taken", async () => {
     project.setup(PROJECT);
-    machine.setup({ targets: [LAPTOP_TARGET], clone: refuseOccupiedFolder });
+    machine.setup({ targets: [LAPTOP_TARGET], clone: refuseOccupiedResolvedFolder });
     await using screen = await render(<AddProjectToMachineDialogHost />);
     await act(() => openAddProjectToMachine({ projectRef, targetEnvironmentId: laptop }));
     const folder = screen.getByLabelText("Folder on Laptop");
@@ -141,7 +138,7 @@ describe("AddProjectToMachineDialog", () => {
     await userEvent.keyboard("{Enter}");
 
     await vi.waitFor(() =>
-      expect(machine.runCommand).toHaveBeenCalledWith({
+      expect(machine.projectCommand).toHaveBeenCalledWith({
         environmentId: laptop,
         input: expect.objectContaining({
           workspaceRoot: "/home/me/code/repo",
@@ -169,7 +166,7 @@ describe("AddProjectToMachineDialog", () => {
           archivedAt: "2026-11-01T00:00:00.000Z",
         },
       ],
-      clone: refuseOccupiedFolder,
+      clone: refuseOccupiedResolvedFolder,
     });
     await using screen = await render(<AddProjectToMachineDialogHost />);
     await act(() => openAddProjectToMachine({ projectRef, targetEnvironmentId: laptop }));
@@ -182,7 +179,7 @@ describe("AddProjectToMachineDialog", () => {
     await vi.waitFor(() =>
       expect(machine.openThread).toHaveBeenCalledWith(scopeProjectRef(laptop, owner)),
     );
-    expect(machine.runCommand.mock.calls).toEqual([
+    expect(machine.projectCommand.mock.calls).toEqual([
       [{ environmentId: laptop, input: { projectId: owner, archived: false } }],
     ]);
   });
