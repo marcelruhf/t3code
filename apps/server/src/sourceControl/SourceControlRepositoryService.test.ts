@@ -201,7 +201,7 @@ it.effect("clones a looked-up repository after creating missing parent directori
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
-it.effect("marks a non-empty destination so clients can offer to add the folder instead", () =>
+it.effect("names a non-empty destination so clients can offer that folder instead", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -211,11 +211,12 @@ it.effect("marks a non-empty destination so clients can offer to add the folder 
     const error = yield* Effect.gen(function* () {
       const service = yield* SourceControlRepositoryService.SourceControlRepositoryService;
       return yield* service
-        .prepareClone({ remoteUrl: CLONE_URLS.url, destinationPath })
+        // Clients match the folder against stored project paths, so it comes back resolved.
+        .prepareClone({ remoteUrl: CLONE_URLS.url, destinationPath: `${destinationPath}/./` })
         .pipe(Effect.flip);
     }).pipe(Effect.provide(layer({})));
 
-    assert.strictEqual(error.reason, "destination-not-empty");
+    assert.strictEqual(error.occupiedDestination, destinationPath);
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 

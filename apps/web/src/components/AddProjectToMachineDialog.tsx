@@ -2,6 +2,7 @@ import { m } from "../i18n/messages";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useParams } from "@tanstack/react-router";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { findProjectByPath } from "@t3tools/client-runtime/state/projects";
 import {
   getAddProjectInitialQuery,
   getCloneDestinationPath,
@@ -15,7 +16,10 @@ import {
   SourceControlRepositoryError,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import {
+  type AtomCommandResult,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import * as Schema from "effect/Schema";
 import {
   type CloneProtocol,
@@ -40,7 +44,7 @@ import {
 import { formatBytes } from "../lib/formatBytes";
 import { seedDraftModelSelection } from "../lib/seedDraftModelSelection";
 import { newProjectId } from "../lib/utils";
-import { readProject, subscribeProject, useProject } from "../state/entities";
+import { readProject, readProjects, subscribeProject, useProject } from "../state/entities";
 import { useEnvironments } from "../state/environments";
 import { projectEnvironment } from "../state/projects";
 import { useDebouncedValue } from "../state/queries";
@@ -172,15 +176,19 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
+  const updateProject = useAtomCommand(projectEnvironment.update, { reportFailure: false });
   // A clone refused because the folder is taken; editing the path or machine clears the offer.
   const [occupiedFolder, setOccupiedFolder] = useState<{
     readonly environmentId: EnvironmentId;
+    readonly typedPath: string;
+    /** The server's resolved path, which is what stored projects record. */
     readonly path: string;
   } | null>(null);
-  const folderOccupied =
-    occupiedFolder !== null &&
-    occupiedFolder.environmentId === target?.environmentId &&
-    occupiedFolder.path === destinationPath.trim();
+  const occupied =
+    occupiedFolder?.environmentId === target?.environmentId &&
+    occupiedFolder?.typedPath === destinationPath.trim()
+      ? occupiedFolder
+      : null;
 
   // The project or every target can vanish while the dialog is open. Submitting
   // before the file list loads would silently skip the default .env copies.
@@ -236,20 +244,33 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
     }
     setSubmitting(true);
     setError(null);
-    if (folderOccupied) {
+    if (occupied) {
       // The folder is the user's own checkout, so its files stay as they are and nothing is copied.
-      const projectId = newProjectId();
-      const result = await createProject({
-        environmentId: target.environmentId,
-        input: {
-          projectId,
-          title: project.title,
-          workspaceRoot: destinationPath.trim(),
-          createWorkspaceRootIfMissing: false,
-          defaultModelSelection: null,
-        },
-      });
-      if (result._tag === "Failure") {
+      // A project there already owns it, so open that one (back from the archive if needed).
+      const existing = findProjectByPath(
+        readProjects().filter((candidate) => candidate.environmentId === target.environmentId),
+        occupied.path,
+      );
+      const projectId = existing?.id ?? newProjectId();
+      let result: AtomCommandResult<unknown, unknown> | null = null;
+      if (!existing) {
+        result = await createProject({
+          environmentId: target.environmentId,
+          input: {
+            projectId,
+            title: project.title,
+            workspaceRoot: occupied.path,
+            createWorkspaceRootIfMissing: false,
+            defaultModelSelection: null,
+          },
+        });
+      } else if (existing.archivedAt != null) {
+        result = await updateProject({
+          environmentId: target.environmentId,
+          input: { projectId, archived: false },
+        });
+      }
+      if (result?._tag === "Failure") {
         setError(
           thrownErrorMessage(squashAtomCommandFailure(result), m) ??
             gt("Could not add the folder."),
@@ -278,8 +299,12 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
       close();
       openClonedProject(scopeProjectRef(target.environmentId, projectId));
     } catch (cause) {
-      if (isSourceControlRepositoryError(cause) && cause.reason === "destination-not-empty") {
-        setOccupiedFolder({ environmentId: target.environmentId, path: destinationPath.trim() });
+      if (isSourceControlRepositoryError(cause) && cause.occupiedDestination !== undefined) {
+        setOccupiedFolder({
+          environmentId: target.environmentId,
+          typedPath: destinationPath.trim(),
+          path: cause.occupiedDestination,
+        });
       } else {
         setError(thrownErrorMessage(cause, m) ?? gt("Could not start the clone."));
       }
@@ -328,7 +353,7 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
                 </span>
               </div>
               <div className="flex w-28 flex-col items-center gap-0.5 text-muted-foreground text-xs">
-                {folderOccupied ? (
+                {occupied ? (
                   <span>{gt("existing folder")}</span>
                 ) : (
                   // oxlint-disable-next-line t3code/no-untranslated-copy -- git command name
@@ -339,7 +364,7 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
                   <ArrowRightIcon className="-ms-1 size-3.5" aria-hidden />
                 </span>
                 <span>
-                  {folderOccupied || selectedFiles.size === 0
+                  {occupied || selectedFiles.size === 0
                     ? gt("no files")
                     : gt("{count, plural, one {+ {count} file} other {+ {count} files}}", {
                         count: selectedFiles.size,
@@ -386,7 +411,7 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
               </div>
             </div>
 
-            {folderOccupied ? null : (
+            {occupied ? null : (
               <div className="flex flex-col gap-1.5">
                 <Label>
                   <T>Clone over</T>
@@ -425,7 +450,7 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
                 spellCheck={false}
                 autoComplete="off"
               />
-              {folderOccupied ? (
+              {occupied ? (
                 <p className="text-muted-foreground text-xs">
                   {gt(
                     "This folder already exists on {machine}. Add it as the project as it is, or choose another folder to clone into.",
@@ -435,7 +460,7 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
               ) : null}
             </div>
 
-            {canListFiles && !folderOccupied ? (
+            {canListFiles && !occupied ? (
               <div className="flex flex-col gap-1.5">
                 <div className="flex items-center gap-2">
                   <Label className="flex-1">
@@ -531,7 +556,7 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
             <Button type="submit" disabled={unavailable || submitting}>
               {submitting
                 ? gt("Starting…")
-                : folderOccupied
+                : occupied
                   ? gt("Add existing folder")
                   : target
                     ? gt("Clone to {machine}", { machine: target.label })
